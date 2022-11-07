@@ -1,0 +1,314 @@
+# Contributors: Shuhao Wan (walwan@ucdavis.edu), Shuchen Ye (shcye@ucdavis.edu)
+# AGX Dynamics imports
+import agx
+import agxIO
+import agxOSG
+import agxSDK
+import agxUtil
+import agxPython
+import agxRender
+import agxCollide
+import agxPowerLine
+import agxDriveTrain
+import agxHydraulics
+
+# Import python modules
+import sys
+import time
+import numpy as np
+from tutorials.tutorial_utils import createHelpText
+from agxPythonModules.utils.plot_pyqt import Window
+from agxPythonModules.tools.read_file import SimulationFile
+from agxPythonModules.utils.callbacks import StepEventCallback, KeyboardCallback as Input, GamepadCallback as Gamepad
+
+class AlternatingSpeedController(agxSDK.StepEventListener):
+    def __init__(self, motor, speed, interval):
+        super().__init__()
+
+        # Enable the motor and set the initial speed
+        motor.setEnable(True)
+        motor.setSpeed(speed)
+
+        # Assign some variables that the listener needs
+        self.interval = interval
+        self.speed = speed
+        self.last = 0
+        self.motor = motor
+
+    # This method will be called every timestep
+    def pre(self, time):
+        # Time to change direction
+        if time - self.last >= self.interval:
+            self.last = time
+            self.speed = -self.speed
+            self.motor.setSpeed(self.speed)
+
+class KeyboardListener(agxSDK.GuiEventListener):
+    def __init__(self, m1, m2, m3, m4, m5, speed):
+        super().__init__(agxSDK.GuiEventListener.KEYBOARD)
+        self.m1 = m1
+        self.m2 = m2
+        self.m3 = m3
+        self.m4 = m4
+        self.m5 = m5
+        self.vehicle_speed_f = speed[0]
+        self.shovel_speed_u = speed[1]
+        self.arm_speed_u = speed[2]
+        self.root = agxPython.getContext().environment.getSceneRoot()
+        app = agxPython.getContext().environment.getApplication()
+        self.decorator = app.getSceneDecorator()
+        print("Keyboardlistener initialized")
+
+    def keyboard(self, key, x, y, alt, keydown):
+        if keydown and key == agxSDK.GuiEventListener.KEY_KP_7:
+            print("Vehicle Forward")
+            vehicle_speed = self.vehicle_speed_f
+        elif keydown and key == agxSDK.GuiEventListener.KEY_KP_1:
+            print("Vehicle Backward")
+            vehicle_speed = -self.vehicle_speed_f
+        else:
+            vehicle_speed = 0
+
+        if keydown and key == agxSDK.GuiEventListener.KEY_KP_9:
+            print("Shovel Up")
+            shovel_speed = self.shovel_speed_u
+        elif keydown and key == agxSDK.GuiEventListener.KEY_KP_3:
+            print("Shovel Down")
+            shovel_speed = -self.shovel_speed_u
+        else:
+            shovel_speed = 0
+
+        if keydown and key == agxSDK.GuiEventListener.KEY_KP_8:
+            print("Arm Up")
+            arm_speed = self.arm_speed_u
+        elif keydown and key == agxSDK.GuiEventListener.KEY_KP_2:
+            print("Arm Down")
+            arm_speed = -self.arm_speed_u
+        else:
+            arm_speed = 0
+        
+        self.m1.setSpeed(vehicle_speed)
+        self.m2.setSpeed(vehicle_speed)
+        self.m3.setSpeed(shovel_speed)
+        self.m4.setSpeed(arm_speed)
+        self.m5.setSpeed(-arm_speed)
+
+        return True
+
+class ForceListener(agxSDK.StepEventListener):
+    def __init__(self, app, constraints):
+        # We give our listener some member attributes
+        super().__init__()
+        self.app = app
+        self.constraints = constraints
+        self.force = agx.Vec3()
+        self.torque = agx.Vec3()
+
+    # We implement the post() method which will be triggered after the solver is done
+    # See the documentation of agxSDK::StepEventListener for more virtual methods
+    def post(self, t):
+        # We loop over the constraints, and here we assume that nothing is being changed.
+        # This is of course wrong for a dynamic system where constraints come and go.
+        # Then we need to extract the constraints every time step. Also perfectly possible.
+        last = 0
+        str = ""
+        for i in range(0, len(self.constraints)):
+            c = self.constraints[i]  # Get the i:th constraint
+            # Get the computed force for body of index 0, our dynamic body
+            c.getLastForce(0, self.force, self.torque)
+            name = c.getName()  # Get the name of the constraint
+            last = i
+            # Build a string with the constraint force for each constraint
+            str = str + "[{0}. f={1:4.2f}]\n".format(name, self.force.z())
+
+        # Some easy way of adding some text to the graphics window
+        self.app.getSceneDecorator().setText(0, str)
+
+        # Next thing is that we want all the contacts in the system, and we will extract the forces for them.
+        contacts = self.getSimulation().getSpace().getGeometryContacts()
+        n = len(contacts)
+        str = ""
+        for i in range(0, n - 1 + 1):
+            # Get the i.th contact
+            c = contacts[i]
+            name = c.geometry(0).getName()  # The name of the first geometry involved in the contact
+            p = c.points().at(0)  # We only get the first point in the contact point data
+            f = p.getNormalForceMagnitude()  # Get the normal force magnitude
+
+            # Build a string with all the contacts
+            str = str + "[{0}. cf={1:4.2f}]\n".format(name, f)
+
+        self.app.getSceneDecorator().setText(6, str)
+        return super().post(t)
+
+
+
+# Camera setup
+def setupCamera(app):
+    cameraData                   = app.getCameraData()
+    cameraData.eye               = agx.Vec3(4,5,7) #(0,5,0)
+    cameraData.center            = agx.Vec3(0,0,0)
+    cameraData.up                = agx.Vec3(0,0,0)
+    cameraData.nearClippingPlane = 1
+    cameraData.farClippingPlane  = 500
+    app.applyCameraData( cameraData )    
+
+# Scene setup
+def buildScene1(sim, app, root):
+    createHelpText(sim, app)
+    setupCamera(app)
+
+    ground = agxCollide.Geometry( agxCollide.Box( 8, 0.1, 8 ) )
+    ground.setMaterial( agx.Material( 'ground' ) )
+    ground.setPosition( 0, 0, 0 )
+    ground.setRotation( agx.Quat.rotate( agx.degreesToRadians( 0 ), agx.Vec3.Y_AXIS() ) )
+    sim.add( ground )
+    agxOSG.setDiffuseColor( agxOSG.createVisual( ground, root ), agxRender.Color.SaddleBrown() )
+
+    boundingbox1 = agxCollide.Geometry( agxCollide.Box( 0.05, 0.15, 2 ) )
+    boundingbox1.setMaterial( agx.Material( 'boundingbox' ) )
+    boundingbox1.setPosition( 3.5, 0.25, 0 )
+    sim.add(boundingbox1)
+    agxOSG.setDiffuseColor( agxOSG.createVisual( boundingbox1, root ), agxRender.Color.Red() )
+
+    boundingbox2 = agxCollide.Geometry( agxCollide.Box( 2, 0.15, 0.05 ) )
+    boundingbox2.setMaterial( agx.Material( 'boundingbox' ) )
+    boundingbox2.setPosition( 1.5, 0.25, 1.95 )
+    sim.add(boundingbox2)
+    agxOSG.setDiffuseColor( agxOSG.createVisual( boundingbox2, root ), agxRender.Color.Red() )
+
+    boundingbox3 = agxCollide.Geometry( agxCollide.Box( 2, 0.15, 0.05 ) )
+    boundingbox3.setMaterial( agx.Material( 'boundingbox' ) )
+    boundingbox3.setPosition( 1.5, 0.25, -1.95 )
+    sim.add(boundingbox3)
+    agxOSG.setDiffuseColor( agxOSG.createVisual( boundingbox3, root ), agxRender.Color.Red() )
+
+    for i in range(6):
+        sphereBody = agx.RigidBody()
+        sphereBody.setPosition(2.5+(i-3)/4, 1, (i-3)/4+0.25)
+        geom = agxCollide.Geometry(agxCollide.Sphere(0.1))
+        sphereBody.add(geom)
+        geom.setName("Target")
+        sphereBody.getMassProperties().setMass(10)
+        sim.add(sphereBody)
+        agxOSG.setDiffuseColor(agxOSG.createVisual( sphereBody, root ), agxRender.Color.SteelBlue() )
+    
+    
+    end_loader = agxSDK.Assembly()  # Create a new empty Assembly
+    fileName = "end_loader_prefab3.agx"
+    
+    # Read all the objects in the file and add to 'end_loader'
+    if not agxOSG.readFile(fileName, sim, root, end_loader):
+        raise RuntimeError("Unable to open file \'" + fileName + "\'")
+
+    # # Extract all the bodies/constraints/geometries from the 'end_loader' assembly.
+    bodies = agx.RigidBodyPtrVector()
+    constraints = agx.ConstraintPtrVector()
+    agxUtil.extractRigidBodies(bodies, end_loader)
+    constraints.append(end_loader.getConstraint("Cylindrical45"))
+    constraints.append(end_loader.getConstraint("Cylindrical46"))
+    constraints.append(end_loader.getConstraint("Cylindrical47"))
+    constraints.append(end_loader.getConstraint("Prismatic1"))
+    constraints.append(end_loader.getConstraint("Prismatic2"))
+    n = len(bodies)
+    # Loop over them and give them new names
+    for i in range(0, n):
+        b = bodies[i]
+        b.setName("End_Loader_" + b.getName())
+
+    # Add end loader to the simulation
+    sim.add(end_loader)
+
+    # Locate end loader
+    q = from_rotation_vector([90,0,0])
+    end_loader.setLocalPosition(-0.5,1,0.8)
+    end_loader.setLocalRotation(agx.Quat(q[0],q[1],q[2],q[3]))
+    
+    cs = sim.getConstraint("Cylindrical45"); cs = cs.asCylindricalJoint()
+    ca1 = sim.getConstraint("Cylindrical46"); ca1 = ca1.asCylindricalJoint()
+    ca2 = sim.getConstraint("Cylindrical47"); ca2 = ca2.asCylindricalJoint()
+    cp1 = sim.getConstraint("Prismatic1"); cp1.rebind(); cp1 = cp1.asPrismatic()
+    cp2 = sim.getConstraint("Prismatic2"); cp2.rebind(); cp2 = cp2.asPrismatic()
+
+    m1 = cp1.getMotor1D()
+    m2 = cp2.getMotor1D()
+    m3 = cs.getMotor1D(agx.Constraint2DOF.FIRST)
+    m4 = ca1.getMotor1D(agx.Constraint2DOF.FIRST)
+    m5 = ca2.getMotor1D(agx.Constraint2DOF.FIRST)
+    
+    m1.setSpeed(0)
+    m2.setSpeed(0)
+    m3.setSpeed(0)
+    m4.setSpeed(0)
+    m5.setSpeed(0)
+    
+    speed = [-0.75, -0.15, 0.1]
+
+    # # Periodic control
+    # linear_speed = speed[0]
+    # speedController1 = AlternatingSpeedController(m1, linear_speed, 15)
+    # speedController2 = AlternatingSpeedController(m2, linear_speed, 15)
+    # sim.add(speedController1); sim.add(speedController2)
+    # shovel_speed = speed[1]
+    # speedController3 = AlternatingSpeedController(m3, shovel_speed, 4)
+    # sim.add(speedController3)
+    # arm_speed = speed[2]
+    # speedController4 = AlternatingSpeedController(m4, arm_speed, 6)
+    # speedController5 = AlternatingSpeedController(m5, -arm_speed, 6)
+    # sim.add(speedController4); sim.add(speedController5)
+
+    keyboardListener = KeyboardListener(m1, m2, m3, m4, m5, speed)
+    sim.add(keyboardListener)
+
+    forceListener = ForceListener(app, constraints)
+    sim.add(forceListener)
+
+
+
+def buildScene():
+    sim = agxPython.getContext().environment.getSimulation()
+    app = agxPython.getContext().environment.getApplication()
+    root = agxPython.getContext().environment.getSceneRoot()
+    buildScene1(sim, app, root)
+
+def main(args):
+    # Create an application with graphics etc.
+    app = agxOSG.ExampleApplication()
+
+    # Create a command line parser. sys.executable will point to python executable
+    # in this case, because getArgumentName(0) needs to match the C argv[0] which
+    # is the name of the program running
+    argParser = agxIO.ArgumentParser([sys.executable] + args)
+
+    app.addScene(argParser.getArgumentName(1), "buildScene", ord('1'), True)
+
+    # Call the init method of ExampleApplication
+    # It will setup the viewer, windows etc.
+    if app.init(argParser):
+        app.run()
+    else:
+        print("An error occurred while initializing ExampleApplication.")
+
+def from_rotation_vector(rot):
+    """Convert input 3-vector in axis-angle representation to unit quaternion
+    Parameters
+    ----------
+    rot: (Nx3) float array
+        Each vector represents the axis of the rotation, with norm
+        proportional to the angle of the rotation in radians.
+    Returns
+    -------
+    q: float array of quaternions
+        Unit quaternions resulting in rotations corresponding to input
+        rotations.  Output shape is rot.shape[:-1].
+    """
+    rot = np.array(rot, copy=False)
+    quats = np.zeros(rot.shape[:-1]+(4,))
+    quats[..., 1:] = rot[...]/2
+    return np.exp(quats) 
+
+# Entry point when this script is loaded with python
+if agxPython.getContext() is None:
+    init = agx.AutoInit()
+    main(sys.argv)
+
