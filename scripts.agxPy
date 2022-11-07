@@ -49,6 +49,12 @@ def buildScene():
     node = agxOSG.createVisual(box_body, root())
     agxOSG.setDiffuseColor(node, agxRender.Color.Red())
     simulation().add(box_body)
+
+    prismatic = simulation().getConstraint("Prismatic30")
+    prismatic = prismatic.asPrismatic()
+    assert prismatic
+
+    prismatic.getMotor1D().setSpeed(0)
     
 
 
