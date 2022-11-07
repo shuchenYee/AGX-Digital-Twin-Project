@@ -9,6 +9,8 @@ import agxSDK
 import agxRender
 import agxUtil
 
+import numpy as np
+
 
 # Import useful utilities to access the current simulation, graphics root and application
 from agxPythonModules.utils.environment import init_app, simulation, root, application
@@ -31,14 +33,20 @@ for p in paths:
     if folder_path not in sys.path:
         sys.path.append(folder_path)
 
-
+g_listeners = []
 
 def buildScene():
     """
     Entry point when using agxViewer
     """
 
-    assert agxOSG.readFile("end_loader_prefab.agx", simulation(), root())
+    # assert agxOSG.readFile("end_loader_prefab.agx", simulation(), root()
+    end_loader = agxSDK.Assembly()
+    assert agxOSG.readFile("prefab.agx", simulation(), root(), end_loader)
+    # Locate end loader
+    q = from_rotation_vector([90,90,0])
+    end_loader.setPosition(0,-6,0.9)
+    end_loader.setRotation(agx.Quat(q[0],q[1],q[2],q[3]))
     
     box = agxCollide.Geometry(agxCollide.Box(7,7,0.05))
     box_body = agx.RigidBody()
@@ -50,19 +58,73 @@ def buildScene():
     agxOSG.setDiffuseColor(node, agxRender.Color.Red())
     simulation().add(box_body)
 
-    prismatic = simulation().getConstraint("Prismatic30")
+    prismatic = simulation().getConstraint("Prismatic2")
     prismatic = prismatic.asPrismatic()
     assert prismatic
 
     prismatic.getMotor1D().setSpeed(0)
+
+    # cyl1 = simulation().getConstraint("Cylindrical45")
+    # cyl2 = simulation().getConstraint("Cylindrical46")
+    # cyl3 = simulation().getConstraint("Cylindrical47")
+    # prismatic = prismatic.asPrismatic()
+    # assert prismatic
+
+    # prismatic.getMotor1D().setSpeed(0)
+
+    # hinge = simulation().getConstraint("Hinge57")
+
+    speedController1 = AlternatingSpeedController(prismatic.getMotor1D(), 3, 1)
+    simulation().add(speedController1)
+
+    g_listeners.append(speedController1)
+
+def from_rotation_vector(rot):
+    """Convert input 3-vector in axis-angle representation to unit quaternion
+    Parameters
+    ----------
+    rot: (Nx3) float array
+        Each vector represents the axis of the rotation, with norm
+        proportional to the angle of the rotation in radians.
+    Returns
+    -------
+    q: float array of quaternions
+        Unit quaternions resulting in rotations corresponding to input
+        rotations. Output shape is rot.shape[:-1].
+    """
+    rot = np.array(rot, copy=False)
+    quats = np.zeros(rot.shape[:-1]+(4,))
+    quats[..., 1:] = rot[...]/2
+    return np.exp(quats) 
     
 
-
 # Entry point when this script is started with python executable
-init = init_app(name=__name__,
-                scenes=[(buildScene, '1')],
-                autoStepping=True,  # Default: False
-                onInitialized=lambda app: print('App successfully initialized.'),
-                onShutdown=lambda app: print('App successfully shut down.'))
+# init = init_app(name=__name__,
+#                 scenes=[(buildScene, '1')],
+#                 autoStepping=True,  # Default: False
+#                 onInitialized=lambda app: print('App successfully initialized.'),
+#                 onShutdown=lambda app: print('App successfully shut down.'))
 
 
+# Create a StepEventListener that will alternate the direction of a motor with a specified interval (seconds)
+class AlternatingSpeedController(agxSDK.StepEventListener):
+    def __init__(self, motor, speed, interval):
+        super().__init__()
+
+        # Enable the motor and set the initial speed
+        motor.setEnable(True)
+        motor.setSpeed(speed)
+
+        # Assign some variables that the listener needs
+        self.interval = interval
+        self.speed = speed
+        self.last = 0
+        self.motor = motor
+
+    # This method will be called every timestep
+    def pre(self, time):
+        # Time to change direction
+        if time - self.last >= self.interval:
+            self.last = time
+            self.speed = -self.speed
+            self.motor.setSpeed(self.speed)
