@@ -1,0 +1,62 @@
+import os
+import sys
+
+# Import libraries to access the AGX API
+import agx
+import agxCollide
+import agxOSG
+import agxSDK
+import agxRender
+import agxUtil
+
+
+# Import useful utilities to access the current simulation, graphics root and application
+from agxPythonModules.utils.environment import init_app, simulation, root, application
+
+# Import utilities to easily add events called during runtime
+from agxPythonModules.utils.callbacks import StepEventCallback as sec
+
+# Import utilities to capture keyboard events
+from agxPythonModules.utils.callbacks import KeyboardCallback as kc
+
+from agxPythonModules.utils.environment import simulation, root, init_app, application
+
+
+
+# For scenes with multiple scenes, we need to add the current directory so
+# we can locate the script at reload
+paths = ["D:\AGX Projects\End_Loader_Project"]
+for p in paths:
+    folder_path = os.getenv("AGX_DIR") + p
+    if folder_path not in sys.path:
+        sys.path.append(folder_path)
+
+
+
+def buildScene():
+    """
+    Entry point when using agxViewer
+    """
+
+    assert agxOSG.readFile("end_loader_prefab.agx", simulation(), root())
+    
+    box = agxCollide.Geometry(agxCollide.Box(7,7,0.05))
+    box_body = agx.RigidBody()
+    box_body.setMotionControl(agx.RigidBody.STATIC)
+    box_body.add(box)
+    box_body.setPosition(0,0,-0.2)
+
+    node = agxOSG.createVisual(box_body, root())
+    agxOSG.setDiffuseColor(node, agxRender.Color.Red())
+    simulation().add(box_body)
+    
+
+
+# Entry point when this script is started with python executable
+init = init_app(name=__name__,
+                scenes=[(buildScene, '1')],
+                autoStepping=True,  # Default: False
+                onInitialized=lambda app: print('App successfully initialized.'),
+                onShutdown=lambda app: print('App successfully shut down.'))
+
+
