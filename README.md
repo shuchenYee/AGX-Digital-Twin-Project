@@ -1,12 +1,14 @@
 # AGX-Digital-Twin-Project
-Already: Run the prefab
+Finished: 
+
+1. Run the prefab
+
+2. revise constraints in scripts
+
+3. listener
 
 TODO: 
 
-1. revise constraints in scripts
+1. listener data & plot
 
-2.  listener
-
-3. listener data & plot
-
-4. granular bodies
+2. granular bodies
